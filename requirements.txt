@@ -1,0 +1,6 @@
+git+https://github.com/larsks/python-openstacksdk@openstack-spawner#egg=openstacksdk
+traitlets
+jinja2
+remote_pdb
+requests
+jupyterhub

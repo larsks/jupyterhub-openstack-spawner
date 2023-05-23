@@ -1,0 +1,17 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+traitlets = "*"
+jinja2 = "*"
+jupyterhub = "*"
+remote-pdb = "*"
+openstacksdk = {ref = "openstack-spawner", git = "https://github.com/larsks/python-openstacksdk"}
+requests = "*"
+
+[dev-packages]
+
+[requires]
+python_version = "3.11"

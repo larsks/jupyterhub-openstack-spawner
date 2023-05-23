@@ -1,0 +1,9 @@
+[project]
+name = "openstack-spawner"
+version = "0.1.0"
+
+[tool.setuptools]
+packages = ["openstack_spawner"]
+
+[project.entry-points."jupyterhub.spawners"]
+openstack_spawner = "openstack_spawner.spawner:OpenStackSpawner"

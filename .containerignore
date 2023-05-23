@@ -1,0 +1,7 @@
+*.img
+*.raw
+*.qcow2
+.venv
+clouds.yaml
+jupyterhub_cookie_secret
+jupyterhub.sqlite
