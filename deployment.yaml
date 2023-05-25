@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jupyterhub
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - image: ghcr.io/larsks/jupyterhub-openstack-spawner:main
+          imagePullPolicy: Always
+          name: jupterhub
+          ports:
+            - containerPort: 8000
+              name: jupyterhub
+          volumeMounts:
+            - name: jupyterhub-state
+              mountPath: /srv/jupyterhub
+            - name: cloud-credentials
+              mountPath: /etc/openstack
+            - name: jupyterhub-config
+              mountPath: /config
+          args:
+            - -f
+            - /config/jupyterhub_config.py
+      volumes:
+        - name: jupyterhub-state
+          emptyDir: {}
+        - name: jupyterhub-config
+          configMap:
+            name: jupyterhub-config
+        - name: cloud-credentials
+          secret:
+            secretName: cloud-credentials
