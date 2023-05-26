@@ -1,4 +1,5 @@
 import asyncio
+import time
 import requests
 import string
 import random
@@ -82,7 +83,7 @@ class OpenStackSpawner(Spawner):
         self.userdata = UserdataGenerator(self, config=self.config)
         self.server_id = None
 
-    async def create_server(self):
+    def create_server(self):
         hash = "".join(random.choices(string.ascii_letters + string.digits, k=8))
         server_name = f"jhub-{self.user.name}-{hash}"
         self.log.info(
@@ -100,7 +101,7 @@ class OpenStackSpawner(Spawner):
             userdata=self.userdata.userdata,
             key_name=self.os_keypair_name,
             auto_ip=False,
-            wait=False,
+            wait=True,
             tags=self.os_server_tags,
         )
         self.log.info("created server id %s", server.id)
@@ -109,12 +110,12 @@ class OpenStackSpawner(Spawner):
         # wait for server to become active
         self.log.info("waiting for server to become active")
         while not self.server_active():
-            await asyncio.sleep(1)
+            time.sleep(1)
         self.log.info("server is active")
 
         return server
 
-    async def assign_floating_ip(self, server):
+    def assign_floating_ip(self, server):
         floating_ip = self.conn.available_floating_ip(self.os_floating_ip_network)
 
         self.log.info("attaching floating ip %s", floating_ip.floating_ip_address)  # type: ignore
@@ -125,7 +126,7 @@ class OpenStackSpawner(Spawner):
             server = self.get_server()
             if server and server.public_v4:
                 break
-            await asyncio.sleep(1)
+            time.sleep(1)
         self.log.info("floating ip %s is available", server.public_v4)
 
         return server
@@ -135,8 +136,9 @@ class OpenStackSpawner(Spawner):
             if attr.startswith("os_"):
                 self.log.info(f"{attr} = {getattr(self, attr)}")
 
-        server = await self.create_server()
-        server = await self.assign_floating_ip(server)
+        loop = asyncio.get_running_loop()
+        server = await loop.run_in_executor(None, self.create_server)
+        server = await loop.run_in_executor(None, self.assign_floating_ip, server)
 
         self.user.server.ip = server.public_v4  # type: ignore
         self.user.server.port = 8000  # type: ignore
