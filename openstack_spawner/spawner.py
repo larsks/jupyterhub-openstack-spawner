@@ -167,22 +167,27 @@ class OpenStackSpawner(Spawner):
         server = self.get_server()
         return server and server.status == "ACTIVE"
 
+    def service_is_available(self, server):
+        try:
+            url = f"http://{server.public_v4}:8000{self.user.url}api"
+            res = requests.get(url, timeout=10)
+            if res.status_code == 200:
+                self.log.info("poll: %s is available", url)
+                return True
+            self.log.info("poll: %s failed: %s", url, res.status_code)
+            return False
+        except Exception as err:
+            self.log.info("poll: connection failed: %s", err)
+
     async def poll(self):
         server = self.get_server()
 
         if server and server.status == "ACTIVE":
             self.log.info("poll: server is active")
             if server.public_v4:
-                try:
-                    url = f"http://{server.public_v4}:8000{self.user.url}api"
-                    res = requests.get(url)
-                    if res.status_code == 200:
-                        self.log.info("poll: %s is available", url)
-                        return None
-                    else:
-                        self.log.info("poll: %s failed: %s", url, res.status_code)
-                except Exception as err:
-                    self.log.info("poll: connection failed: %s", err)
+                loop = asyncio.get_running_loop()
+                if await loop.run_in_executor(None, self.service_is_available, server):
+                    return None
             else:
                 self.log.info("poll: floating ip not yet available")
         else:
