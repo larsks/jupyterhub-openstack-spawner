@@ -109,8 +109,15 @@ class OpenStackSpawner(Spawner):
 
         # wait for server to become active
         self.log.info("waiting for server to become active")
-        while not self.server_active():
+        while True:
+            server = self.get_server()
+            if server.status == 'ACTIVE':
+                break
+            if server.status == 'ERROR':
+                return None
+
             time.sleep(1)
+
         self.log.info("server is active")
 
         return server
@@ -138,7 +145,11 @@ class OpenStackSpawner(Spawner):
 
         loop = asyncio.get_running_loop()
         server = await loop.run_in_executor(None, self.create_server)
+        if server is None:
+            return None
         server = await loop.run_in_executor(None, self.assign_floating_ip, server)
+        if server is None:
+            return None
 
         self.user.server.ip = server.public_v4  # type: ignore
         self.user.server.port = 8000  # type: ignore
