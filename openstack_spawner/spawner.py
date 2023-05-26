@@ -42,7 +42,7 @@ class UserdataGenerator(Configurable):
 
         env[
             "JUPYTERHUB_ACTIVITY_URL"
-        ] = f"{env['JUPYTERHUB_API_URL']}/users/lars/activity"
+        ] = f"{env['JUPYTERHUB_API_URL']}/users/{self.spawner.user.name}/activity"
 
         return env
 
