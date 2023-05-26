@@ -5,7 +5,7 @@ import string
 import random
 import jinja2
 from jupyterhub.spawner import Spawner
-from traitlets import default, Unicode, List
+from traitlets import default, Unicode, List, Integer
 from traitlets.config import Configurable
 import openstack
 
@@ -75,6 +75,8 @@ class OpenStackSpawner(Spawner):
     os_image_name = Unicode(config=True)
     os_network_name = Unicode(config=True)
     os_server_tags = List(config=True)
+
+    service_check_timeout = Integer(10, config=True)  # type: ignore
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -170,7 +172,7 @@ class OpenStackSpawner(Spawner):
     def service_is_available(self, server):
         try:
             url = f"http://{server.public_v4}:8000{self.user.url}api"
-            res = requests.get(url, timeout=10)
+            res = requests.get(url, timeout=self.service_check_timeout)
             if res.status_code == 200:
                 self.log.info("poll: %s is available", url)
                 return True
