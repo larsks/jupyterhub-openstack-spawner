@@ -8,8 +8,17 @@ from jupyterhub.spawner import Spawner
 from traitlets import default, Unicode, List, Integer
 from traitlets.config import Configurable
 import openstack
+import openstack.exceptions
 
-# from openstack.compute.v2.server import Server as openstack_server
+
+class SpawnError(Exception):
+    pass
+
+
+class ServerCreationError(SpawnError):
+    def __init__(self, msg, server):
+        super().__init__(msg)
+        self.server = server
 
 
 class UserdataGenerator(Configurable):
@@ -83,112 +92,125 @@ class OpenStackSpawner(Spawner):
 
         self.conn = openstack.connect(cloud=self.os_cloud_name)  # type: ignore
         self.userdata = UserdataGenerator(self, config=self.config)
-        self.server_id = None
 
-    def create_server(self):
+        self.server_id = None
+        self.server_name = self.make_server_name()
+
+    def make_server_name(self):
         hash = "".join(random.choices(string.ascii_letters + string.digits, k=8))
-        server_name = f"jhub-{self.user.name}-{hash}"
+        return f"jhub-{self.user.name}-{hash}"
+
+    async def create_server(self):
+        loop = asyncio.get_running_loop()
+
         self.log.info(
             "creating server %s",
-            server_name,
+            self.server_name,
         )
 
-        # DO NOT set wait=True here because that will block the Jupyterhub
-        # web ui until the server reaches ACTIVE state.
-        server = self.conn.create_server(
-            name=server_name,
-            image=self.os_image_name,
-            flavor=self.os_flavor_name,
-            network=self.os_network_name,
-            userdata=self.userdata.userdata,
-            key_name=self.os_keypair_name,
-            auto_ip=False,
-            wait=True,
-            tags=self.os_server_tags,
+        server = await loop.run_in_executor(
+            None,
+            lambda: self.conn.create_server(
+                name=self.server_name,
+                image=self.os_image_name,
+                flavor=self.os_flavor_name,
+                network=self.os_network_name,
+                userdata=self.userdata.userdata,
+                key_name=self.os_keypair_name,
+                auto_ip=False,
+                wait=False,
+                tags=self.os_server_tags,
+            ),
         )
         self.log.info("created server id %s", server.id)
         self.server_id = server.id
 
         # wait for server to become active
-        self.log.info("waiting for server to become active")
+        self.log.info("wait for server to become active")
         while True:
-            server = self.get_server()
-            if server.status == 'ACTIVE':
-                break
-            if server.status == 'ERROR':
-                return None
+            server = await self.get_server()
+            if server is not None:
+                if server.status == "ACTIVE":
+                    break
+                if server.status == "ERROR":
+                    raise ServerCreationError("server entered ERROR state", server)
 
-            time.sleep(1)
+            await asyncio.sleep(1)
 
         self.log.info("server is active")
-
         return server
 
-    def assign_floating_ip(self, server):
-        floating_ip = self.conn.available_floating_ip(self.os_floating_ip_network)
+    async def assign_floating_ip(self, server):
+        loop = asyncio.get_running_loop()
+        floating_ip = await loop.run_in_executor(
+            None, lambda: self.conn.available_floating_ip(self.os_floating_ip_network)
+        )
 
         self.log.info("attaching floating ip %s", floating_ip.floating_ip_address)  # type: ignore
-        self.conn.add_ips_to_server(
-            server, auto_ip=False, ips=[floating_ip.floating_ip_address]  # type: ignore
+        await loop.run_in_executor(
+            None,
+            lambda: self.conn.add_ips_to_server(
+                server, auto_ip=False, ips=[floating_ip.floating_ip_address]  # type: ignore
+            ),
         )
         while True:
-            server = self.get_server()
+            server = await self.get_server()
             if server and server.public_v4:
                 break
-            time.sleep(1)
-        self.log.info("floating ip %s is available", server.public_v4)
+            await asyncio.sleep(1)
 
+        self.log.info("floating ip %s is available", server.public_v4)
         return server
 
     async def start(self):
-        for attr in self.trait_names():
-            if attr.startswith("os_"):
-                self.log.info(f"{attr} = {getattr(self, attr)}")
+        try:
+            server = await self.assign_floating_ip(await self.create_server())
+            return f"http://{server.public_v4}:8000"
+        except ServerCreationError as err:
+            if "message" in err.server.get("fault", {}):
+                msg = err.server.fault["message"]
+            else:
+                msg = str(err)
+            self.log.error("failed to create server: %s", msg)
+            await self.delete_server()
+            raise
 
-        loop = asyncio.get_running_loop()
-        server = await loop.run_in_executor(None, self.create_server)
-        if server is None:
-            return None
-        server = await loop.run_in_executor(None, self.assign_floating_ip, server)
-        if server is None:
-            return None
-
-        self.user.server.ip = server.public_v4  # type: ignore
-        self.user.server.port = 8000  # type: ignore
-        self.db.commit()
-
-        return f"http://{server.public_v4}:8000"
-
-    def get_server(self):
+    async def get_server(self):
         if not self.server_id:
             return
 
-        return self.conn.get_server_by_id(self.server_id)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, self.conn.get_server_by_id, self.server_id
+        )
 
-    def server_active(self):
-        server = self.get_server()
+    async def server_active(self):
+        server = await self.get_server()
         return server and server.status == "ACTIVE"
 
-    def service_is_available(self, server):
+    async def service_is_available(self, server):
+        loop = asyncio.get_running_loop()
         try:
             url = f"http://{server.public_v4}:8000{self.user.url}api"
-            res = requests.get(url, timeout=self.service_check_timeout)
+            res = await loop.run_in_executor(
+                None, lambda: requests.get(url, timeout=self.service_check_timeout)
+            )
             if res.status_code == 200:
                 self.log.info("poll: %s is available", url)
                 return True
             self.log.info("poll: %s failed: %s", url, res.status_code)
-            return False
         except Exception as err:
             self.log.info("poll: connection failed: %s", err)
 
+        return False
+
     async def poll(self):
-        server = self.get_server()
+        server = await self.get_server()
 
         if server and server.status == "ACTIVE":
             self.log.info("poll: server is active")
             if server.public_v4:
-                loop = asyncio.get_running_loop()
-                if await loop.run_in_executor(None, self.service_is_available, server):
+                if await self.service_is_available(server):
                     return None
             else:
                 self.log.info("poll: floating ip not yet available")
@@ -197,31 +219,42 @@ class OpenStackSpawner(Spawner):
 
         return 1
 
-    async def stop(self):
+    async def delete_server(self):
+        loop = asyncio.get_running_loop()
         if self.server_id:
             self.log.info("deleting server %s", self.server_id)
-            if self.conn.delete_server(
-                self.server_id, delete_ips=True, delete_ip_retry=5
+            if await loop.run_in_executor(
+                None,
+                lambda: self.conn.delete_server(
+                    self.server_id,
+                    delete_ips=True,
+                    delete_ip_retry=5,
+                    wait=True,
+                ),
             ):
                 while self.conn.get_server_by_id(self.server_id):
                     await asyncio.sleep(1)
+            self.server_id = None
+
+    async def stop(self):
+        await self.delete_server()
 
     def get_state(self):
         state = super().get_state()
 
         if self.server_id:
             state["server_id"] = self.server_id
+            state["server_name"] = self.server_name
 
-        self.log.info("save state: %s", state)
         return state
 
     def load_state(self, state):
         super().load_state(state)
-        self.log.info("load state: %s", state)
         if "server_id" in state:
             self.server_id = state["server_id"]
+        if "server_name" in state:
+            self.server_name = state["server_name"]
 
     def clear_state(self):
-        self.log.info("clear state")
         super().clear_state()
         self.server_id = None
